@@ -30,69 +30,65 @@ SYSTEM_PROMPT = """당신은 취준생의 든든한 취업 도우미 "루키"입
 
 def _extract_profile_from_conversation(messages: list, current_profile: dict) -> dict:
     """
-    대화 이력과 기존 프로파일을 LLM에 전달하여 최신 정보를 추출·업데이트한다.
-    마지막 사용자 메시지에서 새로운 정보를 파싱하여 current_profile에 병합한다.
+    마지막 사용자 메시지에서 새로 언급된 스펙 정보만 추출하여 current_profile에 병합한다.
+    LLM은 추출만 담당하고, 기존 데이터와의 병합은 Python 코드가 처리한다.
     """
     llm = get_llm(temperature=0.1)
 
-    # 대화 이력을 텍스트로 변환
+    # 최근 메시지만 사용 (루키 질문 + 사용자 답변 쌍)
     conversation_text = "\n".join(
         f"{'사용자' if isinstance(m, HumanMessage) else '루키'}: {m.content}"
-        for m in messages[-10:]  # 최근 10개 메시지만 사용
+        for m in messages[-4:]
     )
 
-    extraction_prompt = f"""아래 대화에서 구직자의 스펙 정보를 추출하여 JSON으로 반환하라.
-기존 프로파일에 없는 새 정보만 추가하고, 기존 정보는 그대로 유지하라.
+    extraction_prompt = f"""아래 대화에서 사용자가 방금 새로 언급한 스펙 정보만 추출하여 JSON으로 반환하라.
 
-[기존 프로파일]
-{json.dumps(current_profile, ensure_ascii=False)}
-
-[최근 대화]
+[대화]
 {conversation_text}
 
 [추출 규칙]
 - 반드시 JSON 객체만 출력하라. 설명 텍스트, 마크다운 코드블록 일체 금지.
-- 새로 언급된 정보만 포함하라. 언급되지 않은 필드는 기존 값을 그대로 유지.
-- 학점은 "3.8/4.5" 형식으로 정규화.
-- experiences는 기존 목록에 새 항목을 append하라.
+- 이번 대화에서 새로 언급된 정보만 포함하라. 언급되지 않은 필드는 null 또는 빈 값으로 두어라.
+- 학점은 "3.8/4.5" 형식으로 정규화하라.
 
 [출력 형식]
 {{
-  "name": "이름 (없으면 기존값 또는 null)",
-  "education": {{"university": "", "major": "", "gpa": "", "graduation_status": ""}},
+  "name": null,
+  "education": {{"university": null, "major": null, "gpa": null, "graduation_status": null}},
   "certificates": [],
   "languages": [],
   "experiences": [],
-  "desired_job": "",
-  "desired_company_type": ""
+  "desired_job": null,
+  "desired_company_type": null
 }}"""
 
     try:
         response = llm.invoke(extraction_prompt)
         extracted = json.loads(response.content.strip())
-        # 기존 프로파일과 병합: None/빈 값은 기존 값 유지
-        merged = dict(current_profile)
-        for key, value in extracted.items():
-            if value is not None and value != "" and value != [] and value != {}:
-                if key == "experiences" and isinstance(value, list):
-                    # 경험은 기존 목록에 새 항목 추가 (중복 방지)
-                    existing = merged.get("experiences", [])
-                    for exp in value:
-                        if exp not in existing:
-                            existing.append(exp)
-                    merged["experiences"] = existing
-                elif key == "education" and isinstance(value, dict):
-                    existing_edu = merged.get("education", {})
-                    for k, v in value.items():
-                        if v:
-                            existing_edu[k] = v
-                    merged["education"] = existing_edu
-                else:
-                    merged[key] = value
-        return merged
     except (json.JSONDecodeError, Exception) as e:
         print(f"[profiling] 프로파일 추출 실패: {e}")
         return current_profile
+
+    # 기존 프로파일에 새 정보 병합 (빈 값은 무시)
+    merged = dict(current_profile)
+    for key, value in extracted.items():
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        if key == "experiences" and isinstance(value, list):
+            existing = merged.get("experiences", [])
+            for exp in value:
+                if exp not in existing:
+                    existing.append(exp)
+            merged["experiences"] = existing
+        elif key == "education" and isinstance(value, dict):
+            existing_edu = merged.get("education", {})
+            for k, v in value.items():
+                if v:
+                    existing_edu[k] = v
+            merged["education"] = existing_edu
+        else:
+            merged[key] = value
+    return merged
 
 
 def _is_profile_complete(profile: dict) -> bool:
