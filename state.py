@@ -42,7 +42,16 @@ class RookieState(TypedDict):
     # True: 구직자가 프로파일 내용을 확인하고 확정함
 
     profiling_stage: str
-    # "greeting" | "collecting" | "summarizing" | "done"
+    # "greeting" | "collecting" | "summarizing" | "conditions" | "done"
+
+    job_conditions: list
+    # 구직자가 중요시하는 필수 조건 목록. UC2 매칭 시 조건 위반 공고를 가중합 계산에서 제외한다.
+    # 각 항목:
+    # {
+    #   "category": str,   # "근무지" | "근무형태" | "근무시간" | "연봉" | "복지" | "기타"
+    #   "condition": str,  # 정규화된 조건 (예: "서울 근무 필수")
+    #   "raw": str         # 사용자 원문 표현
+    # }
 
 
     # ────────────────────────────────────────────

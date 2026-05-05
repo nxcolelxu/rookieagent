@@ -30,6 +30,7 @@ def main():
         "profile_summary": "",
         "profile_confirmed": False,
         "profiling_stage": "greeting",
+        "job_conditions": [],
 
         # UC2 초기값
         "matched_jobs": [],

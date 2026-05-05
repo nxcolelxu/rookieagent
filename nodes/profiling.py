@@ -171,6 +171,58 @@ def _generate_next_question(profile: dict, messages: list) -> str:
         return f"아직 {missing_items[0] if missing_items else '정보'}을 알려주시겠어요?"
 
 
+def _extract_job_conditions(messages: list, current_conditions: list) -> list:
+    """
+    마지막 사용자 메시지에서 필수 조건을 추출하여 구조화된 목록으로 반환한다.
+    "없어요" 등 조건 없음 응답이면 빈 리스트를 반환한다.
+    """
+    llm = get_llm(temperature=0.1)
+
+    # 가장 최근 사용자 메시지만 사용
+    last_user_msg = ""
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            last_user_msg = m.content
+            break
+
+    if not last_user_msg:
+        return current_conditions
+
+    extraction_prompt = f"""구직자가 언급한 취업 필수 조건을 추출하여 JSON 배열로 반환하라.
+
+[구직자 발언]
+{last_user_msg}
+
+[추출 규칙]
+- 반드시 JSON 배열만 출력하라. 설명 텍스트, 마크다운 코드블록 일체 금지.
+- "없어요", "딱히 없어요", "상관없어요" 등 조건이 없다는 표현이면 빈 배열 [] 반환.
+- category는 아래 중 하나로 분류: "근무지" | "근무형태" | "근무시간" | "연봉" | "복지" | "기타"
+- condition은 공고 필터링에 사용할 수 있도록 명확하게 정규화하라.
+
+[출력 형식]
+[
+  {{"category": "근무지", "condition": "서울 근무 필수", "raw": "서울에서 근무해야 해요"}}
+]"""
+
+    try:
+        response = llm.invoke(extraction_prompt)
+        raw = response.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        extracted = json.loads(raw.strip())
+        # 기존 조건과 병합 (중복 제거)
+        merged = list(current_conditions)
+        for cond in extracted:
+            if cond not in merged:
+                merged.append(cond)
+        return merged
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"[profiling] 조건 추출 실패: {e}")
+        return current_conditions
+
+
 def _generate_profile_summary(profile: dict) -> str:
     """
     수집된 user_profile을 바탕으로 구직자에게 보여줄 한국어 요약문을 생성한다.
@@ -254,16 +306,18 @@ def profiling_node(state: RookieState) -> dict:
             is_confirmed = any(kw in user_response for kw in confirm_keywords)
 
             if is_confirmed:
-                # 프로파일 확정 완료
-                confirm_msg = (
-                    "완벽해요! 프로파일이 확정되었어요 🎉\n"
-                    "이제 딱 맞는 채용 공고를 찾아볼게요. 잠깐만 기다려 주세요!"
+                # 프로파일 확정 → 필수 조건 수집 단계로 전환
+                conditions_question = (
+                    "완벽해요! 프로파일이 확정되었어요 🎉\n\n"
+                    "마지막으로 한 가지만 더 여쭤볼게요!\n"
+                    "공고를 찾을 때 꼭 지켜져야 하는 조건이 있나요? "
+                    "예를 들면 '서울에서만 근무할 수 있어요', '재택근무가 필수예요', "
+                    "'야근이 없어야 해요' 같은 것들이요.\n"
+                    "없으시면 '없어요'라고 말씀해 주세요!"
                 )
-                updates["messages"] = [AIMessage(content=confirm_msg)]
-                updates["profiling_stage"] = "done"
-                updates["profile_confirmed"] = True
-                updates["current_step"] = "matching"
-                print(f"[profiling] summarizing → done 전환, profile_confirmed=True")
+                updates["messages"] = [AIMessage(content=conditions_question)]
+                updates["profiling_stage"] = "conditions"
+                print(f"[profiling] summarizing → conditions 전환")
             else:
                 # 수정 요청으로 간주하여 다시 수집 단계로
                 retry_msg = (
@@ -273,6 +327,45 @@ def profiling_node(state: RookieState) -> dict:
                 updates["messages"] = [AIMessage(content=retry_msg)]
                 updates["profiling_stage"] = "collecting"
                 print(f"[profiling] summarizing → collecting 전환 (수정 요청)")
+        return updates
+
+    # ── conditions 단계: 필수 조건 수집 ──────────────────────────────────
+    if stage == "conditions":
+        if messages and isinstance(messages[-1], HumanMessage):
+            # 사용자 답변에서 필수 조건 추출
+            job_conditions = _extract_job_conditions(
+                messages, state.get("job_conditions", [])
+            )
+
+            if job_conditions:
+                cond_list = "\n".join(f"  • [{c['category']}] {c['condition']}" for c in job_conditions)
+                confirm_msg = (
+                    f"알겠어요! 아래 조건을 기준으로 공고를 필터링할게요:\n{cond_list}\n\n"
+                    "이제 딱 맞는 채용 공고를 찾아볼게요. 잠깐만 기다려 주세요!"
+                )
+            else:
+                confirm_msg = (
+                    "네, 별도 조건 없이 모든 공고를 대상으로 찾아볼게요!\n"
+                    "잠깐만 기다려 주세요!"
+                )
+
+            updates["job_conditions"] = job_conditions
+            updates["profiling_stage"] = "done"
+            updates["profile_confirmed"] = True
+            updates["current_step"] = "matching"
+            updates["messages"] = [AIMessage(content=confirm_msg)]
+            print(f"[profiling] conditions → done 전환, 조건 {len(job_conditions)}개 수집")
+        else:
+            # 아직 사용자 답변 없음 → 조건 질문 출력
+            conditions_question = (
+                "마지막으로 한 가지만 더 여쭤볼게요!\n"
+                "공고를 찾을 때 꼭 지켜져야 하는 조건이 있나요? "
+                "예를 들면 '서울에서만 근무할 수 있어요', '재택근무가 필수예요', "
+                "'야근이 없어야 해요' 같은 것들이요.\n"
+                "없으시면 '없어요'라고 말씀해 주세요!"
+            )
+            updates["messages"] = [AIMessage(content=conditions_question)]
+            print(f"[profiling] conditions 단계 - 조건 질문 출력")
         return updates
 
     # ── done 단계: 이미 완료된 상태 ──────────────────────────────────────
