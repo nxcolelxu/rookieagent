@@ -18,7 +18,8 @@ DUMMY_JOB_POSTINGS = [
             "관계형 DB 설계 및 최적화. "
             "우대: AWS/GCP 등 클라우드 플랫폼 경험, 대용량 트래픽 처리 경험"
         ),
-        "required_skills": ["Python", "Java", "RESTful API", "MySQL", "클라우드"]
+        "required_skills": ["Python", "Java", "RESTful API", "MySQL", "클라우드"],
+        "location": 0 # 0: seoul, 
     },
     {
         "id": "job_002",
@@ -78,6 +79,7 @@ def matching_node(state: RookieState) -> dict:
     user_profile을 분석하여 DUMMY_JOB_POSTINGS 각 공고에 매칭 점수를 산출하고
     match_score 내림차순으로 정렬하여 matched_jobs에 저장한다.
     """
+    # TODO: location은 사용자가 입력한 것만 필터링하게 구현, location 뿐만 아니라 학력같은 정보들도 더 추가해야 함
     llm = get_llm(temperature=0.1)
     user_profile = state.get("user_profile", {})
 
